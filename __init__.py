@@ -22,7 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-from .errors import ScopeErr
+class ScopeErr(Exception):
+    pass
 
 class ScopeNode(object):
     def __init__(self):
@@ -94,9 +95,46 @@ class ForNode(ScopeNode):
     def render(self, ctx={}):
         buf = ''
         for i in ctx.get(self.iterable):
-            ctx.update({self.iterator:i})
+            ctx.update({self.iterator: i})
             buf += self.render_children(ctx)
             buf += '\n'
+        return buf
+
+class IfNode(ScopeNode):
+    def __init__(self, chunk):
+        super(IfNode, self).__init__()
+        self.cond_var = IfNode.get_conditional_from_sanitized(chunk)
+        self.else_block = ScopeNode()
+
+    @staticmethod
+    def get_conditional_from_sanitized(chunk):
+        cleaned = chunk.rstrip('%}')
+        cleaned = cleaned.lstrip('{%')
+        cleaned = cleaned.strip().split()[-1]
+        return cleaned
+
+    def add_elsenode(self, elsenode):
+        self.else_block = elsenode
+
+    def render_if_block(self, ctx={}):
+        buf = ''
+        for i in self.nodes:
+            buf += i.render(ctx)
+
+        return buf
+
+    def render_else_block(self, ctx={}):
+        buf = ''
+        for i in self.else_block.nodes:
+            buf += i.render(ctx)
+        return buf
+
+    def render(self, ctx={}):
+        buf = ''
+        if ctx.get(self.cond_var):
+            buf += self.render_if_block(ctx)
+        else:
+            buf += self.render_else_block(ctx)
         return buf
 
 class Templar(object):
@@ -111,7 +149,8 @@ class Templar(object):
 
     # Allows templar to change the scope context
     # This is required for preserving the nested semantics in our template source files
-    def enter_scope(self):
+    def enter_scope(self, new_scope):
+        self.scope_stack.append(new_scope)
         self.scope_idx += 1
         self.current_scope = self.scope_stack[self.scope_idx]
 
@@ -130,14 +169,29 @@ class Templar(object):
         while len(frags):
             current_frag = frags[0]
             frags = frags[1:]
+            if not len(frags) or frags == ' ':
+                continue
             if '{%' in current_frag:
-                if 'endfor' in current_frag:
+                if 'else' in current_frag:
+                    else_node = ScopeNode()
+                    self.current_scope.add_elsenode(else_node)
+                    # Exit the if scope
                     self.exit_scope()
+                    # Enter the else scope
+                    self.enter_scope(else_node)
+                elif 'endif' in current_frag:
+                    self.exit_scope()
+                elif 'endfor' in current_frag:
+                    self.exit_scope()
+                elif 'if' in current_frag:
+                    ifnode = IfNode(current_frag)
+                    self.current_scope.add_node(ifnode)
+                    self.enter_scope(ifnode)
                 else:
                     for_node = ForNode(current_frag)
                     self.current_scope.add_node(for_node)
-                    self.scope_stack.append(for_node)
-                    self.enter_scope()
+                    self.enter_scope(for_node)
+
             elif '{{' in current_frag:
                 var_node = VarNode(current_frag)
                 self.current_scope.add_node(var_node)
@@ -156,3 +210,8 @@ class Templar(object):
         for i in self.scope_stack:
             buf += i.render(ctx)
         return buf
+
+if __name__=='__main__':
+    t = Templar()
+    t.compile('This should{% if truth_val %} execute {{ which }} block {% else %} {{other}} execute else block {% endif %}')
+    print(t.render({'truth_val':False, 'which': 'if', 'other':'not'}))
