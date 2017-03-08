@@ -22,181 +22,65 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-class ScopeErr(Exception):
-    pass
+import re
 
-class ScopeNode(object):
-    def __init__(self):
-        self.nodes = []
+from ifnode import IfNode
+from scopenode import ScopeNode
+from varnode import VarNode
+from fornode import ForNode
+from rawnode import RawNode
 
-    def add_node(self, node):
-        self.nodes.append(node)
-
-    def render(self, ctx={}):
-        buf = ''
-        for i in self.nodes:
-            buf += i.render(ctx)
-        return buf
-
-class RawNode(object):
-    def __init__(self, chunk):
-        self.chunk = chunk
-
-    def render(self, ctx={}):
-        return str(self.chunk)
-
-class VarNode(object):
-    def __init__(self, chunk):
-        self.var = VarNode.extract_var(chunk)
-
-    @staticmethod
-    def extract_var(chunk):
-        cleaned = chunk.lstrip('{{')
-        cleaned = cleaned.rstrip('}}')
-        return cleaned.strip()
-
-    def render(self, ctx={}):
-        if '.' in self.var:
-            obj, attr = self.var.split('.')
-            if obj and isinstance(obj, dict):
-                obj = ctx.get(obj)
-                return str(obj.get(attr))
-            else:
-                return str(getattr(ctx.get(obj), attr, None))
-
-        return str(ctx.get(self.var))
-
-class ForNode(ScopeNode):
-    def __init__(self, chunk):
-        super(ForNode, self).__init__()
-        self.iterable = ForNode.get_iterable_from_sanitized(chunk)
-        self.iterator = ForNode.get_iterator_from_sanitized(chunk)
-
-    @staticmethod
-    def get_iterable_from_sanitized(chunk):
-        cleaned = chunk.rstrip('%}')
-        cleaned = cleaned.lstrip('{%')
-        cleaned = cleaned.split()[-1]
-        return cleaned
-
-    @staticmethod
-    def get_iterator_from_sanitized(chunk):
-        cleaned = chunk.rstrip('%}')
-        cleaned = cleaned.lstrip('{%')
-        cleaned = cleaned.split()[1]
-        return cleaned
-
-    def render_children(self, ctx={}):
-        buf = ''
-        for i in self.nodes:
-            buf += i.render(ctx)
-        return buf
-
-    def render(self, ctx={}):
-        buf = ''
-        for i in ctx.get(self.iterable):
-            ctx.update({self.iterator: i})
-            buf += self.render_children(ctx)
-            buf += '\n'
-        return buf
-
-class IfNode(ScopeNode):
-    def __init__(self, chunk):
-        super(IfNode, self).__init__()
-        self.cond_var = IfNode.get_conditional_from_sanitized(chunk)
-        self.else_block = ScopeNode()
-
-    @staticmethod
-    def get_conditional_from_sanitized(chunk):
-        cleaned = chunk.rstrip('%}')
-        cleaned = cleaned.lstrip('{%')
-        cleaned = cleaned.strip().split()[-1]
-        return cleaned
-
-    def add_elsenode(self, elsenode):
-        self.else_block = elsenode
-
-    def render_if_block(self, ctx={}):
-        buf = ''
-        for i in self.nodes:
-            buf += i.render(ctx)
-
-        return buf
-
-    def render_else_block(self, ctx={}):
-        buf = ''
-        for i in self.else_block.nodes:
-            buf += i.render(ctx)
-        return buf
-
-    def render(self, ctx={}):
-        buf = ''
-        if ctx.get(self.cond_var):
-            buf += self.render_if_block(ctx)
-        else:
-            buf += self.render_else_block(ctx)
-        return buf
+from error import ScopeErr
 
 class Templar(object):
     def __init__(self):
-        import re
-        self.root_scope = ScopeNode()
+        self.scope_stack = [ScopeNode()]
         var_pat = r"({{.*?}}|{%.*?%})"
         self.regex = re.compile(var_pat)
-        self.scope_stack = [self.root_scope]
-        self.scope_idx = 0
-        self.current_scope = self.scope_stack[self.scope_idx]
+        self.current_scope = self.scope_stack[-1]
 
     # Allows templar to change the scope context
-    # This is required for preserving the nested semantics in our template source files
+    # This allows for the nested semantics in our template source files
     def enter_scope(self, new_scope):
-        self.scope_stack.append(new_scope)
-        self.scope_idx += 1
-        self.current_scope = self.scope_stack[self.scope_idx]
+        self.scope_stack.append(new_scope)        
+        self.current_scope = self.scope_stack[-1]
 
     # Allows templar to exit the scope
     def exit_scope(self):
         self.scope_stack.pop()
-        self.scope_idx -= 1
-        if self.scope_idx < 0:
+        if not len(self.scope_stack):
             raise ScopeErr('Unexpected end of a Scope')
-        self.current_scope = self.scope_stack[self.scope_idx]
+        self.current_scope = self.scope_stack[-1]
 
     # During parsing, we maintain a scope level
     # at initial stage we have a scope level of root, i.e., the root_scope
     def compile(self, templ_src):
-        frags = self.regex.split(templ_src)
-        while len(frags):
-            current_frag = frags[0]
-            frags = frags[1:]
-            if not len(frags) or frags == ' ':
-                continue
-            if '{%' in current_frag:
-                if 'else' in current_frag:
+        for c in self.regex.split(templ_src):
+            if '{%' in c:
+                if 'else' in c:
                     else_node = ScopeNode()
                     self.current_scope.add_elsenode(else_node)
                     # Exit the if scope
                     self.exit_scope()
                     # Enter the else scope
                     self.enter_scope(else_node)
-                elif 'endif' in current_frag:
+                elif 'endif' in c:
                     self.exit_scope()
-                elif 'endfor' in current_frag:
+                elif 'endfor' in c:
                     self.exit_scope()
-                elif 'if' in current_frag:
-                    ifnode = IfNode(current_frag)
+                elif 'if' in c:
+                    ifnode = IfNode(c)
                     self.current_scope.add_node(ifnode)
                     self.enter_scope(ifnode)
                 else:
-                    for_node = ForNode(current_frag)
+                    for_node = ForNode(c)
                     self.current_scope.add_node(for_node)
                     self.enter_scope(for_node)
-
-            elif '{{' in current_frag:
-                var_node = VarNode(current_frag)
+            elif '{{' in c:
+                var_node = VarNode(c)
                 self.current_scope.add_node(var_node)
             else:
-                raw_node = RawNode(current_frag)
+                raw_node = RawNode(c)
                 self.current_scope.add_node(raw_node)
 
         # Sanity check to make sure be are back at the root scope
@@ -213,5 +97,5 @@ class Templar(object):
 
 if __name__=='__main__':
     t = Templar()
-    t.compile('This should{% if truth_val %} execute {{ which }} block {% else %} {{other}} execute else block {% endif %}')
-    print(t.render({'truth_val':False, 'which': 'if', 'other':'not'}))
+    t.compile('This should{% if truth_val %} execute {{ which }} block {% else %} {{other}} {%for i in books %}I am reading {{i}} {% endfor %} execute else block  {% endif %}')
+    print(t.render({'truth_val':False, 'which': 'if', 'other':'not', 'books':['A', 'B', 'C', 'D']}))
