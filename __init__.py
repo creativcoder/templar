@@ -54,7 +54,11 @@ class Templar(object):
 
     # During parsing, we maintain a scope level
     # at initial stage we have a scope level of root, i.e., the root_scope
-    def compile(self, templ_src):
+    def compile(self, templ_src='', file=None):
+        try:
+            templ_src = ''.join((open(file).readline()))
+        except:
+            pass
         for c in self.regex.split(templ_src):
             if '{%' in c:
                 if 'else' in c:
@@ -97,5 +101,5 @@ class Templar(object):
 
 if __name__=='__main__':
     t = Templar()
-    t.compile('This should{% if truth_val %} execute {{ which }} block {% else %} {{other}} {%for i in books %}I am reading {{i}} {% endfor %} execute else block  {% endif %}')
+    t.compile(file='test_template.md')
     print(t.render({'truth_val':False, 'which': 'if', 'other':'not', 'books':['A', 'B', 'C', 'D']}))
